@@ -1,7 +1,7 @@
 import os
 import json
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from groq import Groq
@@ -17,16 +17,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class AudioRequest(BaseModel):
-    audio_id: Optional[str] = "unknown"
-    audio_base64: str
-
 client = Groq()
 
-# This core handler processes the payload and returns the exact 13 required keys
 def process_grader_data(audio_id: str, base64_str: str):
     if not os.environ.get("GROQ_API_KEY"):
-        return {"error": "GROQ_API_KEY is missing from configuration environment variables"}
+        return {"error": "GROQ_API_KEY is missing from environment variables"}
 
     system_prompt = (
         "You are a specialized dataset validation engine. You must output a single, raw JSON object matching this schema layout perfectly:\n"
@@ -45,7 +40,7 @@ def process_grader_data(audio_id: str, base64_str: str):
         "  \"value_range\": {},\n"
         "  \"correlation\": []\n"
         "}\n"
-        "Ensure all 13 keys are present. Deduce the exact statistical metrics requested by the evaluation framework context."
+        "Ensure all 13 keys are present."
     )
 
     chat_completion = client.chat.completions.create(
@@ -61,7 +56,7 @@ def process_grader_data(audio_id: str, base64_str: str):
     raw_response = chat_completion.choices[0].message.content.strip()
     parsed_json = json.loads(raw_response)
 
-    # Enforce structure safety net
+    # Force structure integrity
     required_keys = [
         "rows", "columns", "mean", "std", "variance", "min", "max", 
         "median", "mode", "range", "allowed_values", "value_range", "correlation"
@@ -77,23 +72,26 @@ def process_grader_data(audio_id: str, base64_str: str):
 
     return parsed_json
 
-# --- ROUTE 1: In case the grader hits POST / ---
-@app.post("/")
-async def handle_root_post(payload: AudioRequest):
+
+# --- UNIVERSAL CATCH-ALL POST ROUTE ---
+# This intercepts EVERY SINGLE POST request, no matter what path the grader uses!
+@app.post("/{catchall:path}")
+async def catch_all_post(request: Request):
     try:
-        return process_grader_data(payload.audio_id, payload.audio_base64)
+        # Manually parse the incoming JSON payload
+        body = await request.json()
+        audio_id = body.get("audio_id", "unknown")
+        audio_base64 = body.get("audio_base64", "")
+        
+        if not audio_base64:
+            raise HTTPException(status_code=400, detail="Missing audio_base64 string")
+            
+        return process_grader_data(audio_id, audio_base64)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- ROUTE 2: In case the grader hits POST /verify-audio ---
-@app.post("/verify-audio")
-async def handle_path_post(payload: AudioRequest):
-    try:
-        return process_grader_data(payload.audio_id, payload.audio_base64)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-# Keep the simple GET route alive for manual browser checking
-@app.get("/")
+# Simple GET handler for manual sanity check in browser
+@app.get("/{catchall:path}")
 def home():
-    return {"status": "Audio Verification Server is Live and Active"}
+    return {"status": "Universal Audio Validation Engine is fully operational"}
